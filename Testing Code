@@ -1,0 +1,61 @@
+from tensorflow.keras.models import load_model
+import numpy as np
+import pandas as pd
+from tensorflow.keras.preprocessing.image import load_img, img_to_array
+from tensorflow.keras.applications.efficientnet import preprocess_input
+import os
+
+# Load the EfficientNetB0 model you saved
+model_path = '/Users/saishivanibalamurugan/Desktop/Capsule Challenge/best_model.keras'
+model = load_model(model_path)
+
+# Function to load and preprocess images (adapted for EfficientNetB0)
+def load_and_preprocess_image(full_path, target_size):
+    img = load_img(full_path, target_size=target_size)
+    img_array = img_to_array(img)
+    preprocessed_img = preprocess_input(img_array)
+    return preprocessed_img
+
+# Load test data from directory
+def load_test_data(test_dir, image_size=(224, 224)):  # Adjust image size for EfficientNet
+    image_filenames = [fname for fname in os.listdir(test_dir) if fname.lower().endswith(('jpg', 'jpeg', 'png'))]
+    X_test = np.array([load_and_preprocess_image(os.path.join(test_dir, fname), image_size) for fname in image_filenames])
+    return X_test, image_filenames
+
+# Define path for test data
+test_path = '/Users/saishivanibalamurugan/Desktop/Capsule Challenge/Testing set/Images'  # Adjust as needed
+image_size = (224, 224)  # Update image size for EfficientNetB0
+
+# Load test data
+X_test, image_paths = load_test_data(test_path, image_size=image_size)
+
+# Ensure images were loaded correctly
+if len(X_test) == 0:
+    print("No test images found. Please check the test directory.")
+else:
+    # Make predictions on test data
+    y_test_pred = model.predict(X_test)
+
+    # Convert probabilities to class labels
+    predicted_classes = np.argmax(y_test_pred, axis=1)
+
+    # Define class labels
+    class_labels = ['Angioectasia', 'Bleeding', 'Erosion', 'Erythema', 'Foreign Body',
+                    'Lymphangiectasia', 'Normal', 'Polyp', 'Ulcer', 'Worms']  # Modify as needed
+
+    # Map numeric predictions to class names
+    predicted_class_labels = [class_labels[i] for i in predicted_classes]
+
+    # Create a DataFrame with predictions and image paths
+    predictions_df = pd.DataFrame(y_test_pred, columns=class_labels)
+    predictions_df.insert(0, 'image_path', image_paths)  # Add image paths to DataFrame
+    predictions_df['Predicted_Class'] = predicted_class_labels  # Add predicted class labels
+
+    # Check if predictions_df has data before saving
+    if predictions_df.empty:
+        print("No predictions were generated.")
+    else:
+        # Save to Excel
+        output_test_predictions = "test_excel.xlsx"
+        predictions_df.to_excel(output_test_predictions, index=False)
+        print(f"Test predictions saved to {output_test_predictions}")
