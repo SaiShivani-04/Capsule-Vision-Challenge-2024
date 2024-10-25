@@ -1,0 +1,162 @@
+# Import Libraries
+import ssl
+import certifi
+import urllib.request
+import tensorflow as tf
+from tensorflow.keras.preprocessing import image_dataset_from_directory
+from tensorflow.keras.applications import EfficientNetB0
+from tensorflow.keras.layers import Dense, Dropout, GlobalAveragePooling2D, BatchNormalization
+from tensorflow.keras.models import Model
+from tensorflow.keras.callbacks import ModelCheckpoint, EarlyStopping, LearningRateScheduler
+from sklearn.metrics import classification_report, confusion_matrix
+import matplotlib.pyplot as plt
+import numpy as np
+
+# SSL Testing Code
+context = ssl.create_default_context(cafile=certifi.where())
+try:
+    with urllib.request.urlopen('https://www.google.com', context=context) as response:
+        print("SSL connection successful")
+except Exception as e:
+    print(f"SSL connection failed: {e}")
+
+# Dataset Path
+train_dir = '/Users/saishivanibalamurugan/Desktop/Capsule Challenge/Dataset/training'
+val_dir = '/Users/saishivanibalamurugan/Desktop/Capsule Challenge/Dataset/validation'
+
+# Data Augmentation
+data_augmentation = tf.keras.Sequential([
+    tf.keras.layers.RandomFlip("horizontal_and_vertical"),
+    tf.keras.layers.RandomRotation(0.3),
+    tf.keras.layers.RandomZoom(0.3),
+    tf.keras.layers.RandomContrast(0.2),
+    tf.keras.layers.RandomBrightness(0.2)
+])
+
+# Create Training Dataset
+train_dataset = image_dataset_from_directory(
+    train_dir,
+    image_size=(224, 224),
+    batch_size=64
+)
+
+# Create Validation Dataset
+validation_dataset = image_dataset_from_directory(
+    val_dir,
+    image_size=(224, 224),
+    batch_size=64
+)
+
+# Prefetch and optimize dataset loading
+AUTOTUNE = tf.data.AUTOTUNE
+train_dataset = train_dataset.map(lambda x, y: (data_augmentation(x), y)).prefetch(buffer_size=AUTOTUNE)
+validation_dataset = validation_dataset.prefetch(buffer_size=AUTOTUNE)
+
+# Load EfficientNetB0 Model
+base_model = EfficientNetB0(weights='imagenet', include_top=False, input_shape=(224, 224, 3))
+base_model.trainable = False  # Freeze the base model
+
+# Build the Model with additional layers
+x = base_model.output
+x = GlobalAveragePooling2D()(x)
+x = BatchNormalization()(x)
+x = Dropout(0.5)(x)
+x = Dense(512, activation='relu')(x)
+x = BatchNormalization()(x)
+x = Dropout(0.4)(x)
+x = Dense(256, activation='relu')(x)
+x = Dropout(0.3)(x)
+predictions = Dense(10, activation='softmax')(x)
+
+model = Model(inputs=base_model.input, outputs=predictions)
+
+# Compile the Model
+model.compile(optimizer='adam', loss='sparse_categorical_crossentropy', metrics=['accuracy'])
+
+# Callbacks
+checkpoint = ModelCheckpoint("best_model.keras", monitor='val_accuracy', save_best_only=True, mode='max', verbose=1)
+early_stopping = EarlyStopping(monitor='val_accuracy', patience=10, verbose=1, restore_best_weights=True)
+
+# Learning Rate Scheduler
+def lr_scheduler(epoch, lr):
+    if epoch > 5:
+        return float(lr * tf.math.exp(-0.1))
+    return float(lr)
+
+lr_callback = LearningRateScheduler(lr_scheduler)
+
+# Initial Training (with frozen base model)
+history = model.fit(
+    train_dataset,
+    validation_data=validation_dataset,
+    epochs=10,
+    callbacks=[checkpoint, early_stopping, lr_callback]
+)
+
+# Unfreeze some layers of the EfficientNetB0 model for fine-tuning
+base_model.trainable = True
+fine_tune_at = 100  # Unfreeze after this layer
+for layer in base_model.layers[:fine_tune_at]:
+    layer.trainable = False
+
+# Recompile the model with a lower learning rate
+model.compile(optimizer=tf.keras.optimizers.Adam(1e-5),
+              loss='sparse_categorical_crossentropy',
+              metrics=['accuracy'])
+
+# Fine-tuning the model
+history_finetune = model.fit(
+    train_dataset,
+    validation_data=validation_dataset,
+    epochs=20,
+    callbacks=[checkpoint, early_stopping, lr_callback]
+)
+
+# Evaluate the Model
+loss, accuracy = model.evaluate(validation_dataset)
+print(f"Validation Accuracy: {accuracy * 100:.2f}%")
+
+# Plot Training History
+plt.figure(figsize=(12, 6))
+plt.subplot(1, 2, 1)
+plt.plot(history.history['accuracy'], label='Training Accuracy')
+plt.plot(history.history['val_accuracy'], label='Validation Accuracy')
+plt.plot(history_finetune.history['accuracy'], label='Fine-Tune Training Accuracy')
+plt.plot(history_finetune.history['val_accuracy'], label='Fine-Tune Validation Accuracy')
+plt.xlabel('Epoch')
+plt.ylabel('Accuracy')
+plt.title('Training and Validation Accuracy')
+plt.legend()
+
+plt.subplot(1, 2, 2)
+plt.plot(history.history['loss'], label='Training Loss')
+plt.plot(history.history['val_loss'], label='Validation Loss')
+plt.plot(history_finetune.history['loss'], label='Fine-Tune Training Loss')
+plt.plot(history_finetune.history['val_loss'], label='Fine-Tune Validation Loss')
+plt.xlabel('Epoch')
+plt.ylabel('Loss')
+plt.title('Training and Validation Loss')
+plt.legend()
+plt.show()
+
+# Load the Best Model
+model.load_weights("best_model.keras")
+
+# Predict on Validation Data
+predicted_labels = np.argmax(model.predict(validation_dataset), axis=-1)
+true_labels = np.concatenate([y for x, y in validation_dataset], axis=0)
+
+# Display Classification Report
+print(classification_report(true_labels, predicted_labels))
+
+# Display Confusion Matrix
+conf_matrix = confusion_matrix(true_labels, predicted_labels)
+plt.figure(figsize=(10, 8))
+plt.imshow(conf_matrix, cmap='Blues')
+plt.colorbar()
+plt.title('Confusion Matrix')
+plt.xlabel('Predicted Labels')
+plt.ylabel('True Labels')
+plt.xticks(ticks=np.arange(10), labels=np.arange(10))
+plt.yticks(ticks=np.arange(10), labels=np.arange(10))
+plt.show()
